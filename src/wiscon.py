@@ -1,18 +1,14 @@
 __author__ = "Ece Calikus"
 __email__ = "ece.calikus@hh.se"
 
-from base_detector import BaseDetector
-import pandas as pd
-from sklearn.model_selection import train_test_split
-import numpy as np
-from sklearn.metrics import roc_curve, auc, roc_auc_score, precision_recall_curve, average_precision_score
-import warnings
-from pyod.utils.example import visualize
-from sklearn.utils import class_weight
-from numpy import genfromtxt
-import math
-import os.path
 import configparser
+import math
+
+import numpy as np
+from numpy import genfromtxt
+from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.model_selection import train_test_split
+from base_detector import BaseDetector
 
 
 class WisCon(object):
@@ -25,12 +21,13 @@ class WisCon(object):
         self.y_test = None
         self.y_pool = None
         self.importance_scores = None
-        self.anomaly_scores_all = None
         self.final_scores = None
+        self.final_importance_scores = None
+        self.count = 0
+        self.max_query = 0
 
     def _create_contexts(self):
         import itertools as iter
-        import random
         n_features = len(self.features)
         combination_list = [i for i in range(n_features)]
         combinations = [iter.combinations(combination_list, n) for n in range(1, len(combination_list))]
@@ -59,7 +56,7 @@ class WisCon(object):
         from math import exp
         bias_factor = float(self.params['Wiscon']['bias_factor'])
         priority_list = []
-        if (self.importance_scores is not None) and all(j < 0 for j in self.importance_scores) is not True:
+        if (self.importance_scores is not None) and (all(j < 0 for j in self.importance_scores) is not True):
             weights = self.importance_scores
             for i, w in enumerate(weights):
                 if w < 0:
@@ -83,18 +80,20 @@ class WisCon(object):
         return sample_index, max_scores[sample_index]
 
     def _update_importance_scores(self, y, y_predict, y_scores, s_weights=None):
-        from sklearn.metrics import recall_score
         importance_scores = []
         y_true = np.asarray(y)
         y_predict = np.asarray(y_predict)
         y_scores = np.asarray(y_scores)
         if sum(s_weights) == 0:
             s_weights = (np.ones(len(y_true)) / len(y_true))
+        if sum(y_true) > 0:
+            for i in range(len(s_weights)):
+                if y_true[i] == 0:
+                    s_weights[i] = 0
         for i, y_score in enumerate(y_scores.T):
             y_pred = y_predict.T[i]
             incorrect = y_pred != y_true
             estimator_error = np.average(incorrect, weights=s_weights, axis=0)
-
             if estimator_error == 1:
                 importance_score = 0.5 * math.log(1e-10 / estimator_error)
             elif estimator_error == 0:
@@ -119,13 +118,14 @@ class WisCon(object):
             self.anomaly_scores_all = genfromtxt('scores.csv', delimiter=',')
             self.y_test = genfromtxt('labels.txt')
         else:
-            X_train, X_test, y_train, y_test = train_test_split(self.X, self.y, test_size=float(
-                self.params['Wiscon']['train_test_ratio']))
+            X_train, X_test, y_train, y_test = train_test_split(self.X, self.y,
+                                                                test_size=float(self.params['Wiscon']['train_test_ratio']),
+                                                                stratify=self.y)
             self.y_test = y_test
             context_list = self._create_contexts()
             self.anomaly_scores_all = np.zeros((len(X_test), len(context_list)), float)
             for i in range(len(context_list)):
-                base_detector = BaseDetector(X_train=X_train, X_test=X_test,
+                base_detector = BaseDetector(X_train=X_train, X_test=X_test, y=self.y,
                                              contextual_attr=context_list[i][0], behavioral_attr=context_list[i][1],
                                              params=self.params)
                 self.anomaly_scores_all[:, i] = base_detector.compute_anomaly_scores()
@@ -159,10 +159,23 @@ class WisCon(object):
             self.importance_scores = self._update_importance_scores(queried_labels, queried_predictions, queried_scores,
                                                                     s_weights=sample_weights)[:]
 
+        if self.max_query < sum(queried_labels):
+            self.max_query = sum(queried_labels)
+            self.final_importance_scores = self.importance_scores
+
+        if (sum(queried_labels) < 5) & (self.count < 10):
+            self.count = self.count + 1
+            self.y_pool = np.copy(self.y_test)
+            self.importance_scores = None
+            self.run_active_learning_schema()
+
+        print("max count", self.max_query)
+        if self.max_query != 0:
+            self.importance_scores = self.final_importance_scores
+
         return np.asarray(self.importance_scores).reshape(1, n_context)
 
     def anomaly_score_aggregation(self):
-        from sklearn import preprocessing
         importance_weighted_scores = []
 
         if len(set(self.importance_scores)) <= 1:
@@ -191,9 +204,11 @@ class WisCon(object):
         self.final_scores = importance_weighted_scores
 
     def calculate_performance(self):
-        avg_precision = average_precision_score(self.y_test, self.final_scores)
-        print('AUC-PR:', avg_precision)
-        return avg_precision
-
-
-
+        if self.params['Test']['metric'] == 'AUC-PR':
+            auc_pr = average_precision_score(self.y_test, self.final_scores)
+            print('AUC-PR:', auc_pr)
+            return auc_pr
+        else:
+            auc_roc = roc_auc_score(self.y_test, self.final_scores)
+            print('AUC-ROC:', auc_roc)
+            return auc_roc
