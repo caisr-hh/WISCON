@@ -5,6 +5,9 @@ from pyod.models.loda import LODA
 from pyod.models.lof import LOF
 from pyod.models.ocsvm import OCSVM
 from pyod.models.sod import SOD
+from pyod.models.rod import ROD
+from pyod.models.copod import COPOD
+from pyod.models.abod import ABOD
 from pyod.models.feature_bagging import FeatureBagging
 from sklearn import model_selection
 from sklearn.metrics import average_precision_score, roc_auc_score, make_scorer
@@ -60,6 +63,13 @@ def test_baselines(dataset="annthyroid.csv", baseline="IForest", params=None, me
             clf = SOD(contamination=contam, n_neighbors=200, ref_set=80, alpha=0.8).fit(X_train_original)
         elif baseline == "FB":
             clf = FeatureBagging(contamination=contam).fit(X_train_original)
+        elif baseline == "COPOD":
+            clf = COPOD(contamination=contam).fit(X_train_original)
+        elif baseline == "ROD":
+            clf = ROD(contamination=contam).fit(X_train_original)
+
+        elif baseline == "ABOD":
+            clf = ABOD(contamination=contam,n_neighbors=40, method='fast').fit(X_train_original)
 
         if params is None:
             params, clf = find_best_params(X_train_original, y_train, get_param_grid(baseline), clf, metric='AUC-PR')
@@ -102,9 +112,11 @@ def get_param_grid(baseline):
     elif baseline == "FB":
         return {'n_estimators': list(range(100, 500, 100)),
                 'max_features': list(np.arange(0.2, 1, 0.1))}
+    elif baseline == "ABOD":
+        return {'n_neighbors': list(range(10, 10, 20))}
 
 
-print("satellite", "SOD")
-test_baselines("/Users/ececal/PycharmProjects/WISCON/datasets/satellite.csv", "SOD", params=None,
-               metric='AUC-ROC')
-print("satellite", "SOD")
+print("cardio", "OC")
+test_baselines("/Users/ececal/PycharmProjects/WISCON/datasets/arrhythmia_pca210.csv", "ROD", params=1,
+               metric='AUC-PR')
+print("thy", "FB")
